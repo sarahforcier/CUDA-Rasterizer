@@ -3,7 +3,7 @@
  * @brief     CUDA-accelerated rasterization pipeline.
  * @authors   Skeleton code: Yining Karl Li, Kai Ninomiya, Shuai Shao (Shrek)
  * @date      2012-2016
- * @copyright University of Pennsylvania & STUDENT
+ * @copyright University of Pennsylvania & Sarah Forcier
  */
 
 #include <cmath>
@@ -632,20 +632,22 @@ void _vertexTransformAndAssembly(
 
 	// vertex id
 	int vid = (blockIdx.x * blockDim.x) + threadIdx.x;
-	if (vid < numVertices) {
+	if (vid >= numVertices) return;
 
-		// TODO: Apply vertex transformation here
-		// Multiply the MVP matrix for each vertex position, this will transform everything into clipping space
-		// Then divide the pos by its w element to transform into NDC space
-		// Finally transform x and y to viewport space
+	// TODO: Apply vertex transformation here
+	// Multiply the MVP matrix for each vertex position, this will transform everything into clipping space
+	glm::vec4 world_pos = glm::vec4(primitive.dev_position[vid], 1.f);
+	glm::vec4 clip_pos = MVP * world_pos;
 
-		// TODO: Apply vertex assembly here
-		// Assemble all attribute arraies into the primitive array
-		
-	}
+	// Finally transform x and y to viewport space
+	primitive.dev_verticesOut[vid].pos.x = 0.5f * (float)width * (clip_pos.x / clip_pos.z + 1.f);
+	primitive.dev_verticesOut[vid].pos.y = 0.5f * (float)height * (clip_pos.y / clip_pos.z + 1.f);
+
+	// TODO: Apply vertex assembly here
+	// Assemble all attribute arraies into the primitive array
+	/*primitive.dev_verticesOut[vid].eyePos = ;
+	primitive.dev_verticesOut[vid].eyeNor = ;*/
 }
-
-
 
 static int curPrimitiveBeginId = 0;
 
@@ -660,20 +662,47 @@ void _primitiveAssembly(int numIndices, int curPrimitiveBeginId, Primitive* dev_
 		// TODO: uncomment the following code for a start
 		// This is primitive assembly for triangles
 
-		//int pid;	// id for cur primitives vector
-		//if (primitive.primitiveMode == TINYGLTF_MODE_TRIANGLES) {
-		//	pid = iid / (int)primitive.primitiveType;
-		//	dev_primitives[pid + curPrimitiveBeginId].v[iid % (int)primitive.primitiveType]
-		//		= primitive.dev_verticesOut[primitive.dev_indices[iid]];
-		//}
-
+		int pid;	// id for cur primitives vector
+		if (primitive.primitiveMode == TINYGLTF_MODE_TRIANGLES) {
+			pid = iid / (int)primitive.primitiveType;
+			dev_primitives[pid + curPrimitiveBeginId].v[iid % (int)primitive.primitiveType]
+				= primitive.dev_verticesOut[primitive.dev_indices[iid]];
+		}
 
 		// TODO: other primitive types (point, line)
 	}
 	
 }
 
+__global__
+void _kernRasterize(int numPrimitives, int width, Primitive *primitives, Fragment *fragmentBuffer)
+{
+	// primitive id
+	int id = (blockIdx.x * blockDim.x) + threadIdx.x;
+	if (id >= numPrimitives) return;
 
+	Primitive prim = primitives[id];
+
+	int minX = glm::min(prim.v[0].pos.x, glm::min(prim.v[1].pos.x, prim.v[2].pos.x));
+	int maxX = glm::max(prim.v[0].pos.x, glm::max(prim.v[1].pos.x, prim.v[2].pos.x));
+	int minY = glm::min(prim.v[0].pos.y, glm::min(prim.v[1].pos.y, prim.v[2].pos.y));
+	int maxY = glm::max(prim.v[0].pos.y, glm::max(prim.v[1].pos.y, prim.v[2].pos.y));
+
+	for (int i = minX; i < maxX; ++i) {
+		for (int j = minY; j < maxY; ++j) {
+			int index = i + (j * width);
+			glm::vec3 vec_arr[3];
+			vec_arr[0] = glm::vec3(prim.v[0].pos);
+			vec_arr[1] = glm::vec3(prim.v[1].pos);
+			vec_arr[2] = glm::vec3(prim.v[2].pos);
+			glm::vec3 bary = calculateBarycentricCoordinate(vec_arr, glm::vec2(i, j));
+			if (isBarycentricCoordInBounds(bary)) {
+				fragmentBuffer[index].color = glm::vec3(1.f);
+			}
+		}
+	}
+
+}
 
 /**
  * Perform rasterization.
