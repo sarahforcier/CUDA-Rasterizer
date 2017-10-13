@@ -1,18 +1,39 @@
 CUDA Rasterizer
 ===============
 
-[CLICK ME FOR INSTRUCTION OF THIS PROJECT](./INSTRUCTION.md)
-
 **University of Pennsylvania, CIS 565: GPU Programming and Architecture, Project 4**
 
-* (TODO) YOUR NAME HERE
-* Tested on: (TODO) Windows 22, i7-2222 @ 2.22GHz 22GB, GTX 222 222MB (Moore 2222 Lab)
+Sarah Forcier
 
-### (TODO: Your README)
+Tested on GeForce GTX 1070
 
-*DO NOT* leave the README to the last minute! It is a crucial part of the
-project, and we will not be able to grade you without a good README.
+### Overview
 
+![](img/rasterizer.mp4)
+
+### Features
+
+#### Materials
+
+##### Lambertian
+
+| Cow | Duck | Truck |
+| ----------- | ----------- | ----------- |
+| ![](img/cow_lamb.png) | ![](img/duck_lamb.png) | ![](img/truck_lamb.png) |
+
+##### Blinn-Phong
+
+| Cow | Duck | Truck |
+| ----------- | ----------- | ----------- |
+| ![](img/cow_blinn.png) | ![](img/duck_blinn.png) | ![](img/truck_blinn.png) |
+
+##### Textures
+
+| Default UV mapping | with Perspective Correction | with Bilinear Filtering |
+| ----------- | ----------- | ----------- |
+| ![](img/texture_default.png) | ![](img/texture_corrected.png) | ![](img/texture_bilinear.png) |
+
+#### Tile-based pipeline 
 
 ### Credits
 
