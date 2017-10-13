@@ -22,9 +22,12 @@
 #define BLINN 0 // exponent
 #define NORMAL 0
 #define POSITION 0
-#define DEPTH 0 
+#define DEPTH 0
+#define TEXTURE 1
+#define BILINEAR 1
+#define CORRECTED_PERSPECTIVE_TEXTURE 1
 
-#define AMBIENT 1 // intensity
+#define AMBIENT 1 // intensity percentage
 
 namespace {
 
@@ -49,12 +52,12 @@ namespace {
 		// The attributes listed below might be useful, 
 		// but always feel free to modify on your own
 
-		 glm::vec3 pos;	// eye space position used for shading
-		 glm::vec3 nor;	// eye space normal used for shading, cuz normal will go wrong after perspective transformation
+		glm::vec3 pos;	// eye space position used for shading
+		glm::vec3 nor;	// eye space normal used for shading, cuz normal will go wrong after perspective transformation
 		glm::vec3 dcol;
 		glm::vec3 scol;
-		 glm::vec2 texcoord0;
-		 TextureData* dev_diffuseTex = NULL;
+		glm::vec2 texcoord0;
+		TextureData* dev_diffuseTex = NULL;
 		int texWidth, texHeight;
 	};
 
@@ -75,8 +78,9 @@ namespace {
 		glm::vec3 nor;
 		float depth;
 
-		// VertexAttributeTexcoord texcoord0;
-		// TextureData* dev_diffuseTex;
+		 VertexAttributeTexcoord texcoord0;
+		 TextureData* dev_diffuseTex;
+		 int texWidth, texHeight;
 		// ...
 	};
 
@@ -119,9 +123,9 @@ static int totalNumPrimitives = 0;
 static Primitive *dev_primitives = NULL;
 static Fragment *dev_fragmentBuffer = NULL;
 static glm::vec3 *dev_framebuffer = NULL;
-static glm::vec3 ambientColor;
 
 static int * dev_depth = NULL;	// you might need this buffer when doing depth test
+static int * dev_depthMutex = NULL;
 
 /**
  * Kernel that writes the image to the OpenGL PBO directly.
@@ -146,31 +150,73 @@ void sendImageToPBO(uchar4 *pbo, int w, int h, glm::vec3 *image)
     }
 }
 
+__host__ __device__ glm::vec3 bilinearFilter(float u, float v, int width, TextureData* texture)
+{
+	float x = glm::floor(u);
+	float y = glm::floor(v);
+	float dx = u - x;
+	float dy = v - y;
+
+	int offset = 3 * ((int)x + (int)y * width);
+	glm::vec3 c00 = glm::vec3(texture[offset] / 255.f, texture[offset + 1] / 255.f, texture[offset + 2] / 255.f);
+	glm::vec3 c01 = glm::vec3(texture[offset + 3] / 255.f, texture[offset + 4] / 255.f, texture[offset + 5] / 255.f);
+	offset = 3 * ((int)x + (int)(y + 1) * width);
+	glm::vec3 c10 = glm::vec3(texture[offset] / 255.f, texture[offset + 1] / 255.f, texture[offset + 2] / 255.f);
+	glm::vec3 c11 = glm::vec3(texture[offset + 3] / 255.f, texture[offset + 4] / 255.f, texture[offset + 5] / 255.f);
+
+	glm::vec3 mix0 = glm::mix(c00, c01, dx);
+	glm::vec3 mix1 = glm::mix(c10, c11, dx);
+
+	return glm::mix(mix0, mix1, dy);
+}
+
 __host__ __device__ glm::vec3 shade(Fragment frag)
 {
     glm::vec3 finalColor = glm::vec3(0.f);
 
 	// TODO: add your fragment shader code here
-	glm::vec3 lightPosition = glm::vec3(0.f, 10.f, 0.f); // hard coded light
+	glm::vec3 lightPosition = glm::vec3(0.f, 0.f, 0.f); // hard coded light
 	glm::vec3 normal = frag.nor;
     glm::vec3 lightDir = glm::normalize(lightPosition - frag.pos);
-    finalColor = glm::abs(glm::dot(normal, lightDir)) * frag.dColor + ambientColor;
+    finalColor = glm::dot(normal, lightDir) * frag.dColor;
+
+#if TEXTURE
+	if (frag.dev_diffuseTex != NULL) {
+		float u = frag.texcoord0.x * frag.texWidth;
+		float v = frag.texcoord0.y * frag.texHeight;
+		
+#if BILINEAR
+		finalColor *= bilinearFilter(u, v, frag.texWidth, frag.dev_diffuseTex);
+#else 
+		int offset = 3 * ((int)u + (int)v * frag.texWidth);
+		finalColor *= glm::vec3(frag.dev_diffuseTex[offset + 0] / 255.f,
+			frag.dev_diffuseTex[offset + 1] / 255.f,
+			frag.dev_diffuseTex[offset + 2] / 255.f);
+#endif
+	}
+#endif
+#if AMBIENT
+	finalColor += (float)AMBIENT / 100.f * glm::vec3(1.f);
+#endif
 
 #if BLINN 
     glm::vec3 viewDir = - frag.pos; // camera is at origin in eye space
     glm::vec3 half = glm::normalize(lightDir + viewDir);
     finalColor += glm::pow(glm::dot(normal, half), BLINN) * frag.sColor;
-    
-#elif NORMAL
+#endif
+  
+// debugging
+#if NORMAL 
     finalColor = frag.nor;
 
-#elif POSTION
+#elif POSITION
     finalColor = frag.pos;
 
 #elif DEPTH
     finalColor = glm::vec3(frag.depth);
 
 #endif
+
     return finalColor;
 }
 
@@ -195,10 +241,6 @@ void rasterizeInit(int w, int h)
 {
     width = w;
     height = h;
-    ambientColor = glm::vec3(0.f);
-#if AMBIENT
-    ambientColor = AMBIENT * glm::vec3(1.f);
-#endif 
 	cudaFree(dev_fragmentBuffer);
 	cudaMalloc(&dev_fragmentBuffer, width * height * sizeof(Fragment));
 	cudaMemset(dev_fragmentBuffer, 0, width * height * sizeof(Fragment));
@@ -208,6 +250,10 @@ void rasterizeInit(int w, int h)
     
 	cudaFree(dev_depth);
 	cudaMalloc(&dev_depth, width * height * sizeof(int));
+
+	cudaFree(dev_depthMutex);
+	cudaMalloc(&dev_depthMutex, sizeof(int));
+	cudaMemset(dev_depthMutex, 0, sizeof(int));
 
 	checkCUDAError("rasterizeInit");
 }
@@ -684,7 +730,7 @@ void _vertexTransformAndAssembly(
 	// Finally transform x and y to viewport space
 	primitive.dev_verticesOut[vid].screen_pos.x = 0.5f * (float)width * (clip_pos.x / clip_pos.w + 1.f);
 	primitive.dev_verticesOut[vid].screen_pos.y = 0.5f * (float)height * (1.f - clip_pos.y / clip_pos.w);
-	primitive.dev_verticesOut[vid].screen_pos.z = -0.5f * (clip_pos.z / clip_pos.w + 1.f)
+	primitive.dev_verticesOut[vid].screen_pos.z = -0.5f * (clip_pos.z / clip_pos.w + 1.f);
 
 	// TODO: Apply vertex assembly here
 	// Assemble all attribute arrays into the primitive array
@@ -692,6 +738,12 @@ void _vertexTransformAndAssembly(
 	primitive.dev_verticesOut[vid].nor = glm::normalize(MV_normal * primitive.dev_normal[vid]);
 	primitive.dev_verticesOut[vid].dcol = glm::vec3(1.f);
 	primitive.dev_verticesOut[vid].scol = glm::vec3(1.f);
+#if TEXTURE
+	primitive.dev_verticesOut[vid].texWidth = primitive.diffuseTexWidth;
+	primitive.dev_verticesOut[vid].texHeight = primitive.diffuseTexHeight;
+	primitive.dev_verticesOut[vid].dev_diffuseTex = primitive.dev_diffuseTex;
+	primitive.dev_verticesOut[vid].texcoord0 = primitive.dev_texcoord0[vid];
+#endif
 }
 
 static int curPrimitiveBeginId = 0;
@@ -719,7 +771,7 @@ void _primitiveAssembly(int numIndices, int curPrimitiveBeginId, Primitive* dev_
 }
 
 __global__
-void _kernRasterize(int numPrimitives, int width, Primitive *primitives, Fragment *fragmentBuffer, int *depthBuffer)
+void _kernRasterize(int numPrimitives, int width, Primitive *primitives, Fragment *fragmentBuffer, int *depthBuffer, int *depthMutex)
 {
 	// primitive id
 	int id = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -743,16 +795,54 @@ void _kernRasterize(int numPrimitives, int width, Primitive *primitives, Fragmen
 
 				float d = getZAtCoordinate(bary, vec_arr);
 				int depth = d * INT_MAX;
-				atomicMin(&depthBuffer[index], depth);
+				bool isSet;
+				bool isMin = false;
+				do {
+					isSet = (atomicCAS(depthMutex, 0, 1) == 0);
+					if (isSet) {
+						if (depth < depthBuffer[index]) {
+							depthBuffer[index] = depth;
+							isMin = true;
+						}
+
+						*depthMutex = 0;
+					}
+				} while (!isSet);
+
+				//atomicMin(&depthBuffer[index], depth);
 					
-				if (depthBuffer[index] == depth) {
+				//if (depthBuffer[index] == depth) {
+				if (isMin) {
 					fragmentBuffer[index].dColor = bary.x * prim.v[0].dcol + 
-												bary.y * prim.v[1].dcol + 
-												bary.z * prim.v[2].dcol;
+												   bary.y * prim.v[1].dcol + 
+												   bary.z * prim.v[2].dcol;
+
+#if TEXTURE
+					
+#if CORRECTED_PERSPECTIVE_TEXTURE
+					float w0 = 1.f / prim.v[0].pos.z;
+					float w1 = 1.f / prim.v[1].pos.z;
+					float w2 = 1.f / prim.v[2].pos.z;
+
+					fragmentBuffer[index].texcoord0 = bary.x * prim.v[0].texcoord0 * w0 +
+						                              bary.y * prim.v[1].texcoord0 * w1 +
+						                              bary.z * prim.v[2].texcoord0 * w2;
+					fragmentBuffer[index].texcoord0 /= (bary.x * w0 + bary.y * w1 + bary.z * w2);
+
+#else 
+					fragmentBuffer[index].texcoord0 = bary.x * prim.v[0].texcoord0 +
+						                              bary.y * prim.v[1].texcoord0 +
+						                              bary.z * prim.v[2].texcoord0;
+#endif
+
+					fragmentBuffer[index].dev_diffuseTex = prim.v[0].dev_diffuseTex;
+					fragmentBuffer[index].texWidth = prim.v[0].texWidth;
+					fragmentBuffer[index].texHeight = prim.v[0].texHeight;
+#endif
 
 					fragmentBuffer[index].sColor = bary.x * prim.v[0].scol + 
-												bary.y * prim.v[1].scol + 
-												bary.z * prim.v[2].scol;
+												   bary.y * prim.v[1].scol + 
+												   bary.z * prim.v[2].scol;
 
 					fragmentBuffer[index].nor = bary.x * prim.v[0].nor + 
 												bary.y * prim.v[1].nor + 
@@ -821,7 +911,7 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 	
 	// TODO: rasterize
 	dim3 numBlocksForPrimitives((totalNumPrimitives + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x);
-	_kernRasterize << <numBlocksForPrimitives, numThreadsPerBlock >> > (totalNumPrimitives, width, dev_primitives, dev_fragmentBuffer, dev_depth);
+	_kernRasterize << <numBlocksForPrimitives, numThreadsPerBlock >> > (totalNumPrimitives, width, dev_primitives, dev_fragmentBuffer, dev_depth, dev_depthMutex);
 
     // Copy depthbuffer colors into framebuffer
 	render << <blockCount2d, blockSize2d >> >(width, height, dev_fragmentBuffer, dev_framebuffer);
@@ -868,6 +958,9 @@ void rasterizeFree()
 
 	cudaFree(dev_depth);
 	dev_depth = NULL;
+
+	cudaFree(dev_depthMutex);
+	dev_depthMutex = NULL;
 
     checkCUDAError("rasterize Free");
 }
