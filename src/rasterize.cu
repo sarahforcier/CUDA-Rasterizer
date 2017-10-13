@@ -795,65 +795,65 @@ void _kernRasterize(int numPrimitives, int width, Primitive *primitives, Fragmen
 
 				float d = getZAtCoordinate(bary, vec_arr);
 				int depth = d * INT_MAX;
+
+				fragmentBuffer[index].dColor = bary.x * prim.v[0].dcol +
+					bary.y * prim.v[1].dcol +
+					bary.z * prim.v[2].dcol;
+
+#if TEXTURE
+
+#if CORRECTED_PERSPECTIVE_TEXTURE
+				float w0 = 1.f / prim.v[0].pos.z;
+				float w1 = 1.f / prim.v[1].pos.z;
+				float w2 = 1.f / prim.v[2].pos.z;
+
+				glm::vec2 texcoord0 = bary.x * prim.v[0].texcoord0 * w0 +
+					bary.y * prim.v[1].texcoord0 * w1 +
+					bary.z * prim.v[2].texcoord0 * w2;
+				texcoord0 /= (bary.x * w0 + bary.y * w1 + bary.z * w2);
+
+#else 
+				glm::vec2 texcoord0 = bary.x * prim.v[0].texcoord0 +
+					bary.y * prim.v[1].texcoord0 +
+					bary.z * prim.v[2].texcoord0;
+#endif
+#endif
+				glm::vec3 dColor = bary.x * prim.v[0].dcol + bary.y * prim.v[1].dcol + bary.z * prim.v[2].dcol;
+				glm::vec3 sColor = bary.x * prim.v[0].scol + bary.y * prim.v[1].scol + bary.z * prim.v[2].scol;
+				glm::vec3 nor = bary.x * prim.v[0].nor + bary.y * prim.v[1].nor + bary.z * prim.v[2].nor;
+				glm::vec3 pos = bary.x * prim.v[0].pos + bary.y * prim.v[1].pos + bary.z * prim.v[2].pos;
+
+				// mutex lock
 				bool isSet;
-				bool isMin = false;
+				Fragment frag;
 				do {
 					isSet = (atomicCAS(depthMutex, 0, 1) == 0);
 					if (isSet) {
 						if (depth < depthBuffer[index]) {
 							depthBuffer[index] = depth;
-							isMin = true;
+#if TEXTURE
+							frag.texcoord0 = texcoord0;
+							frag.dev_diffuseTex = prim.v[0].dev_diffuseTex;
+							frag.texWidth = prim.v[0].texWidth;
+							frag.texHeight = prim.v[0].texHeight;
+#endif
+							frag.pos = pos;
+							frag.nor = nor;
+							frag.sColor = sColor;
+							frag.dColor = dColor;
+							frag.depth = d;
+							fragmentBuffer[index] = frag;
 						}
 
 						*depthMutex = 0;
 					}
 				} while (!isSet);
 
+				
+
 				//atomicMin(&depthBuffer[index], depth);
 					
 				//if (depthBuffer[index] == depth) {
-				if (isMin) {
-					fragmentBuffer[index].dColor = bary.x * prim.v[0].dcol + 
-												   bary.y * prim.v[1].dcol + 
-												   bary.z * prim.v[2].dcol;
-
-#if TEXTURE
-					
-#if CORRECTED_PERSPECTIVE_TEXTURE
-					float w0 = 1.f / prim.v[0].pos.z;
-					float w1 = 1.f / prim.v[1].pos.z;
-					float w2 = 1.f / prim.v[2].pos.z;
-
-					fragmentBuffer[index].texcoord0 = bary.x * prim.v[0].texcoord0 * w0 +
-						                              bary.y * prim.v[1].texcoord0 * w1 +
-						                              bary.z * prim.v[2].texcoord0 * w2;
-					fragmentBuffer[index].texcoord0 /= (bary.x * w0 + bary.y * w1 + bary.z * w2);
-
-#else 
-					fragmentBuffer[index].texcoord0 = bary.x * prim.v[0].texcoord0 +
-						                              bary.y * prim.v[1].texcoord0 +
-						                              bary.z * prim.v[2].texcoord0;
-#endif
-
-					fragmentBuffer[index].dev_diffuseTex = prim.v[0].dev_diffuseTex;
-					fragmentBuffer[index].texWidth = prim.v[0].texWidth;
-					fragmentBuffer[index].texHeight = prim.v[0].texHeight;
-#endif
-
-					fragmentBuffer[index].sColor = bary.x * prim.v[0].scol + 
-												   bary.y * prim.v[1].scol + 
-												   bary.z * prim.v[2].scol;
-
-					fragmentBuffer[index].nor = bary.x * prim.v[0].nor + 
-												bary.y * prim.v[1].nor + 
-												bary.z * prim.v[2].nor;
-
-					fragmentBuffer[index].pos = bary.x * prim.v[0].pos + 
-												bary.y * prim.v[1].pos + 
-												bary.z * prim.v[2].pos;
-
-					fragmentBuffer[index].depth = d;
-				}
 			}
 		}
 	}
