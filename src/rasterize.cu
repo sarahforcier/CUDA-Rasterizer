@@ -27,6 +27,10 @@
 #define BILINEAR 1
 #define CORRECTED_PERSPECTIVE_TEXTURE 1
 
+// post-process
+#define BLOOM 150 // threshold out of 300
+#define GAUSSSIAN 0
+
 #define AMBIENT 1 // intensity percentage
 
 namespace {
@@ -123,6 +127,7 @@ static int totalNumPrimitives = 0;
 static Primitive *dev_primitives = NULL;
 static Fragment *dev_fragmentBuffer = NULL;
 static glm::vec3 *dev_framebuffer = NULL;
+static float *dev_postbuffer = NULL;
 
 static int * dev_depth = NULL;	// you might need this buffer when doing depth test
 static int * dev_depthMutex = NULL;
@@ -150,7 +155,8 @@ void sendImageToPBO(uchar4 *pbo, int w, int h, glm::vec3 *image)
     }
 }
 
-__host__ __device__ glm::vec3 bilinearFilter(float u, float v, int width, TextureData* texture)
+__host__ __device__ 
+glm::vec3 bilinearFilter(float u, float v, int width, TextureData* texture)
 {
 	float x = glm::floor(u);
 	float y = glm::floor(v);
@@ -170,7 +176,8 @@ __host__ __device__ glm::vec3 bilinearFilter(float u, float v, int width, Textur
 	return glm::mix(mix0, mix1, dy);
 }
 
-__host__ __device__ glm::vec3 shade(Fragment frag)
+__host__ __device__ 
+glm::vec3 shade(Fragment frag)
 {
     glm::vec3 finalColor = glm::vec3(0.f);
 
@@ -224,7 +231,8 @@ __host__ __device__ glm::vec3 shade(Fragment frag)
 * Writes fragment colors to the framebuffer
 */
 __global__
-void render(int w, int h, Fragment *fragmentBuffer, glm::vec3 *framebuffer) {
+void render(int w, int h, Fragment *fragmentBuffer, glm::vec3 *framebuffer) 
+{
     int x = (blockIdx.x * blockDim.x) + threadIdx.x;
     int y = (blockIdx.y * blockDim.y) + threadIdx.y;
     int index = x + (y * w);
@@ -234,6 +242,88 @@ void render(int w, int h, Fragment *fragmentBuffer, glm::vec3 *framebuffer) {
     }
 }
 
+__global__
+void kernHighPass(int w, int h, glm::vec3 *framebuffer, float *postbuffer) 
+{
+	int x = (blockIdx.x * blockDim.x) + threadIdx.x;
+	int y = (blockIdx.y * blockDim.y) + threadIdx.y;
+	int index = x + (y * w);
+
+	if (x < w && y < h) {
+		glm::vec3 color = framebuffer[index];
+		float intensity = glm::dot(color, color);
+		float threshold = (float)BLOOM / 100.f;
+		postbuffer[index] = (intensity > threshold) ? 1.f : 0.f;
+	}
+}
+
+__global__
+void kernHorizontalBlur(int w, float *postbuffer) 
+{
+	extern __shared__ float row[];
+	
+	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+	if (index >= w) return;
+
+	row[threadIdx.x] = postbuffer[index];
+
+	__syncthreads();
+
+	float weight[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
+	float ret = row[threadIdx.x] * weight[0];
+
+	ret = (threadIdx.x > 3) ? (row[threadIdx.x - 4] * weight[4] + ret) : ret;
+	ret = (threadIdx.x > 2) ? (row[threadIdx.x - 3] * weight[3] + ret) : ret;
+	ret = (threadIdx.x > 1) ? (row[threadIdx.x - 2] * weight[2] + ret) : ret;
+	ret = (threadIdx.x > 0) ? (row[threadIdx.x - 1] * weight[1] + ret) : ret;
+	ret = (threadIdx.x < w - 1) ? (row[threadIdx.x + 1] * weight[1] + ret) : ret;
+	ret = (threadIdx.x < w - 2) ? (row[threadIdx.x + 2] * weight[2] + ret) : ret;
+	ret = (threadIdx.x < w - 3) ? (row[threadIdx.x + 3] * weight[3] + ret) : ret;
+	ret = (threadIdx.x < w - 4) ? (row[threadIdx.x + 4] * weight[4] + ret) : ret;
+
+	postbuffer[index] = ret;
+}
+
+__global__
+void kernVerticalBlur(int h, float *postbuffer) 
+{
+	extern __shared__ float col[];
+	
+	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+	if (index >= h) return;
+
+	col[threadIdx.x] = postbuffer[index];
+
+	__syncthreads();
+
+	float weight[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
+	float ret = col[threadIdx.x] * weight[0];
+
+	ret = (threadIdx.x > 3) ? (col[threadIdx.x - 4] * weight[4] + ret) : ret;
+	ret = (threadIdx.x > 2) ? (col[threadIdx.x - 3] * weight[3] + ret) : ret;
+	ret = (threadIdx.x > 1) ? (col[threadIdx.x - 2] * weight[2] + ret) : ret;
+	ret = (threadIdx.x > 0) ? (col[threadIdx.x - 1] * weight[1] + ret) : ret;
+	ret = (threadIdx.x < h - 1) ? (col[threadIdx.x + 1] * weight[1] + ret) : ret;
+	ret = (threadIdx.x < h - 2) ? (col[threadIdx.x + 2] * weight[2] + ret) : ret;
+	ret = (threadIdx.x < h - 3) ? (col[threadIdx.x + 3] * weight[3] + ret) : ret;
+	ret = (threadIdx.x < h - 4) ? (col[threadIdx.x + 4] * weight[4] + ret) : ret;
+
+	postbuffer[index] = ret;
+
+}
+
+__global__
+void kernAddBloom(int w, int h, glm::vec3 *framebuffer, float *postbuffer)
+{
+	int x = (blockIdx.x * blockDim.x) + threadIdx.x;
+	int y = (blockIdx.y * blockDim.y) + threadIdx.y;
+	int index = x + (y * w);
+
+	if (x < w && y < h) {
+		framebuffer[index] += glm::vec3(postbuffer[index]);
+	}
+}
+
 /**
  * Called once at the beginning of the program to allocate memory.
  */
@@ -241,12 +331,18 @@ void rasterizeInit(int w, int h)
 {
     width = w;
     height = h;
+
 	cudaFree(dev_fragmentBuffer);
 	cudaMalloc(&dev_fragmentBuffer, width * height * sizeof(Fragment));
 	cudaMemset(dev_fragmentBuffer, 0, width * height * sizeof(Fragment));
+
     cudaFree(dev_framebuffer);
     cudaMalloc(&dev_framebuffer,   width * height * sizeof(glm::vec3));
     cudaMemset(dev_framebuffer, 0, width * height * sizeof(glm::vec3));
+
+	cudaFree(dev_postbuffer);
+	cudaMalloc(&dev_postbuffer, width * height * sizeof(float));
+	cudaMemset(dev_postbuffer, 0, width * height * sizeof(float));
     
 	cudaFree(dev_depth);
 	cudaMalloc(&dev_depth, width * height * sizeof(int));
@@ -771,7 +867,7 @@ void _primitiveAssembly(int numIndices, int curPrimitiveBeginId, Primitive* dev_
 }
 
 __global__
-void _kernRasterize(int numPrimitives, int width, Primitive *primitives, Fragment *fragmentBuffer, int *depthBuffer, int *depthMutex)
+void kernRasterize(int numPrimitives, int width, Primitive *primitives, Fragment *fragmentBuffer, int *depthBuffer, int *depthMutex)
 {
 	// primitive id
 	int id = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -911,11 +1007,25 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 	
 	// TODO: rasterize
 	dim3 numBlocksForPrimitives((totalNumPrimitives + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x);
-	_kernRasterize << <numBlocksForPrimitives, numThreadsPerBlock >> > (totalNumPrimitives, width, dev_primitives, dev_fragmentBuffer, dev_depth, dev_depthMutex);
+	kernRasterize << <numBlocksForPrimitives, numThreadsPerBlock >> > (totalNumPrimitives, width, dev_primitives, dev_fragmentBuffer, dev_depth, dev_depthMutex);
 
     // Copy depthbuffer colors into framebuffer
 	render << <blockCount2d, blockSize2d >> >(width, height, dev_fragmentBuffer, dev_framebuffer);
 	checkCUDAError("fragment shader");
+
+	// post-processing
+#if BLOOM
+	kernHighPass << <blockCount2d, blockSize2d >> > (width, height, dev_framebuffer, dev_postbuffer);
+
+	for (int i = 0; i < 5; ++i) {
+		kernHorizontalBlur << <height, width, width * sizeof(float) >> > (width, dev_postbuffer);
+		kernVerticalBlur << <width, height, height * sizeof(float) >> > (height, dev_postbuffer);
+	}
+
+	kernAddBloom << <blockCount2d, blockSize2d >> > (width, height, dev_framebuffer, dev_postbuffer);
+	checkCUDAError("post-process");
+#endif
+
     // Copy framebuffer into OpenGL buffer for OpenGL previewing
     sendImageToPBO<<<blockCount2d, blockSize2d>>>(pbo, width, height, dev_framebuffer);
     checkCUDAError("copy render result to pbo");
@@ -955,6 +1065,9 @@ void rasterizeFree()
 
     cudaFree(dev_framebuffer);
     dev_framebuffer = NULL;
+
+	cudaFree(dev_postbuffer);
+	dev_framebuffer = NULL;
 
 	cudaFree(dev_depth);
 	dev_depth = NULL;
