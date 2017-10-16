@@ -19,17 +19,18 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 // shading
-#define BLINN 0 // exponent
+#define BLINN 0 // exponent (recommended: 50)
 #define NORMAL 0
 #define POSITION 0
 #define DEPTH 0
-#define TEXTURE 1
-#define BILINEAR 1
-#define CORRECTED_PERSPECTIVE_TEXTURE 1
+#define UV 0
+#define TEXTURE 0
+#define BILINEAR 0
+#define CORRECTED_PERSPECTIVE_TEXTURE 0
 
 // post-process
-#define BLOOM 0 // threshold out of 300
-#define GAUSSIAN 1
+#define BLOOM 0 // threshold out of 300 (recommended 50)
+#define GAUSSIAN 0
 
 #define AMBIENT 1 // intensity percentage
 
@@ -221,6 +222,9 @@ glm::vec3 shade(Fragment frag)
 
 #elif DEPTH
     finalColor = glm::vec3(frag.depth);
+
+#elif UV
+	finalColor = glm::vec3(frag.texcoord0.x, frag.texcoord0.y, 0.f);
 
 #endif
 

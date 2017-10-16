@@ -11,6 +11,10 @@ Tested on GeForce GTX 1070
 
 ![](img/rasterizer.mp4)
 
+| Normal | Position | Depth | UV |
+| ----------- | ----------- | ----------- | ----------- |
+| ![](img/duck_normal.png) | ![](img/duck_position.png) | ![](img/duck_depth.png) | ![](img/duck_uv.png) |
+
 ### Features
 
 #### Materials
@@ -33,7 +37,16 @@ Tested on GeForce GTX 1070
 | ----------- | ----------- | ----------- |
 | ![](img/texture_default.png) | ![](img/texture_corrected.png) | ![](img/texture_bilinear.png) |
 
-#### Tile-based pipeline 
+#### Post Processing
+##### Bloom
+| Cow | Duck | Truck |
+| ----------- | ----------- | ----------- |
+| ![](img/cow_bloom.png) | ![](img/duck_bloom.png) | ![](img/truck_bloom.png) |
+
+##### Gaussian Blur
+| Cow | Duck | Truck |
+| ----------- | ----------- | ----------- |
+| ![](img/cow_blur.png) | ![](img/duck_blur.png) | ![](img/truck_blur.png) |
 
 ### Credits
 
