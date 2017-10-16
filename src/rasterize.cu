@@ -19,14 +19,14 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 // shading
-#define BLINN 0 // exponent (recommended: 50)
+#define BLINN 40 // exponent (recommended: 50)
 #define NORMAL 0
 #define POSITION 0
 #define DEPTH 0
 #define UV 0
 #define TEXTURE 0
-#define BILINEAR 0
-#define CORRECTED_PERSPECTIVE_TEXTURE 0
+#define BILINEAR 1
+#define CORRECTED_PERSPECTIVE_TEXTURE 1
 
 // post-process
 #define BLOOM 0 // threshold out of 300 (recommended 50)
@@ -228,7 +228,7 @@ glm::vec3 shade(Fragment frag)
 
 #endif
 
-    return finalColor;
+    return (finalColor.x != finalColor.x) ? glm::vec3(0.f) : finalColor;
 }
 
 /** 
@@ -361,8 +361,8 @@ void rasterizeInit(int w, int h)
 	cudaMalloc(&dev_depth, width * height * sizeof(int));
 
 	cudaFree(dev_depthMutex);
-	cudaMalloc(&dev_depthMutex, sizeof(int));
-	cudaMemset(dev_depthMutex, 0, sizeof(int));
+	cudaMalloc(&dev_depthMutex, width * height * sizeof(int));
+	cudaMemset(dev_depthMutex, 0, width * height * sizeof(int));
 
 	checkCUDAError("rasterizeInit");
 }
@@ -880,7 +880,7 @@ void _primitiveAssembly(int numIndices, int curPrimitiveBeginId, Primitive* dev_
 }
 
 __global__
-void kernRasterize(int numPrimitives, int width, Primitive *primitives, Fragment *fragmentBuffer, int *depthBuffer, int *depthMutex)
+void kernRasterize(int numPrimitives, int width, int height, Primitive *primitives, Fragment *fragmentBuffer, int *depthBuffer, int *depthMutex)
 {
 	// primitive id
 	int id = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -894,8 +894,13 @@ void kernRasterize(int numPrimitives, int width, Primitive *primitives, Fragment
 
 	AABB bbox = getAABBForTriangle(vec_arr);
 
-	for (int i = bbox.min.x; i < bbox.max.x; ++i) {
-		for (int j = bbox.min.y; j < bbox.max.y; ++j) {
+	int minX = glm::clamp((int)bbox.min.x, 0, width);
+	int maxX = glm::clamp((int)bbox.max.x, 0, width);
+	int minY = glm::clamp((int)bbox.min.y, 0, height);
+	int maxY = glm::clamp((int)bbox.max.y, 0, height);
+
+	for (int i = minX; i <= maxX; ++i) {
+		for (int j = minY; j <= maxY; ++j) {
 			
 			glm::vec3 bary = calculateBarycentricCoordinate(vec_arr, glm::vec2(i, j));
 			if (isBarycentricCoordInBounds(bary)) {
@@ -905,9 +910,7 @@ void kernRasterize(int numPrimitives, int width, Primitive *primitives, Fragment
 				float d = getZAtCoordinate(bary, vec_arr);
 				int depth = d * INT_MAX;
 
-				fragmentBuffer[index].dColor = bary.x * prim.v[0].dcol +
-					bary.y * prim.v[1].dcol +
-					bary.z * prim.v[2].dcol;
+				Fragment fragment;
 
 #if TEXTURE
 
@@ -926,43 +929,32 @@ void kernRasterize(int numPrimitives, int width, Primitive *primitives, Fragment
 					bary.y * prim.v[1].texcoord0 +
 					bary.z * prim.v[2].texcoord0;
 #endif
+				fragment.texcoord0 = texcoord0;
+				fragment.dev_diffuseTex = prim.v[0].dev_diffuseTex;
+				fragment.texWidth = prim.v[0].texWidth;
+				fragment.texHeight = prim.v[0].texHeight;
 #endif
-				glm::vec3 dColor = bary.x * prim.v[0].dcol + bary.y * prim.v[1].dcol + bary.z * prim.v[2].dcol;
-				glm::vec3 sColor = bary.x * prim.v[0].scol + bary.y * prim.v[1].scol + bary.z * prim.v[2].scol;
-				glm::vec3 nor = bary.x * prim.v[0].nor + bary.y * prim.v[1].nor + bary.z * prim.v[2].nor;
-				glm::vec3 pos = bary.x * prim.v[0].pos + bary.y * prim.v[1].pos + bary.z * prim.v[2].pos;
+				fragment.dColor = bary.x * prim.v[0].dcol + bary.y * prim.v[1].dcol + bary.z * prim.v[2].dcol;
+				fragment.sColor = bary.x * prim.v[0].scol + bary.y * prim.v[1].scol + bary.z * prim.v[2].scol;
+				fragment.nor = bary.x * prim.v[0].nor + bary.y * prim.v[1].nor + bary.z * prim.v[2].nor;
+				fragment.pos = bary.x * prim.v[0].pos + bary.y * prim.v[1].pos + bary.z * prim.v[2].pos;
+				fragment.depth = d;
 
 				// mutex lock
 				bool isSet;
-				Fragment frag;
 				do {
-					isSet = (atomicCAS(depthMutex, 0, 1) == 0);
+					isSet = (atomicCAS(&depthMutex[index], 0, 1) == 0);
 					if (isSet) {
 						if (depth < depthBuffer[index]) {
 							depthBuffer[index] = depth;
-#if TEXTURE
-							frag.texcoord0 = texcoord0;
-							frag.dev_diffuseTex = prim.v[0].dev_diffuseTex;
-							frag.texWidth = prim.v[0].texWidth;
-							frag.texHeight = prim.v[0].texHeight;
-#endif
-							frag.pos = pos;
-							frag.nor = nor;
-							frag.sColor = sColor;
-							frag.dColor = dColor;
-							frag.depth = d;
-							fragmentBuffer[index] = frag;
+
+							fragmentBuffer[index] = fragment;
 						}
 
-						*depthMutex = 0;
+						depthMutex[index] = 0;
 					}
 				} while (!isSet);
 
-				
-
-				//atomicMin(&depthBuffer[index], depth);
-					
-				//if (depthBuffer[index] == depth) {
 			}
 		}
 	}
@@ -1020,7 +1012,7 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 	
 	// TODO: rasterize
 	dim3 numBlocksForPrimitives((totalNumPrimitives + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x);
-	kernRasterize << <numBlocksForPrimitives, numThreadsPerBlock >> > (totalNumPrimitives, width, dev_primitives, dev_fragmentBuffer, dev_depth, dev_depthMutex);
+	kernRasterize << <numBlocksForPrimitives, numThreadsPerBlock >> > (totalNumPrimitives, width, height, dev_primitives, dev_fragmentBuffer, dev_depth, dev_depthMutex);
 
     // Copy depthbuffer colors into framebuffer
 	render << <blockCount2d, blockSize2d >> >(width, height, dev_fragmentBuffer, dev_framebuffer);
@@ -1034,7 +1026,7 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 #if BLOOM
 	kernHighPass << <blockCount2d, blockSize2d >> > (width, height, dev_framebuffer, dev_postbuffer);
 
-	for (int i = 0; i < 10; ++i) {
+	for (int i = 0; i < 1; ++i) {
 		kernHorizontalBlur << <numBlocksW, numThreadsW, width * sizeof(float) >> > (width, height, dev_postbuffer);
 		kernVerticalBlur << <numBlocksH, numThreadsH, height * sizeof(float) >> > (width, height, dev_postbuffer);
 	}
