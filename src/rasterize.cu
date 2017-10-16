@@ -28,8 +28,8 @@
 #define CORRECTED_PERSPECTIVE_TEXTURE 1
 
 // post-process
-#define BLOOM 150 // threshold out of 300
-#define GAUSSSIAN 0
+#define BLOOM 0 // threshold out of 300
+#define GAUSSIAN 1
 
 #define AMBIENT 1 // intensity percentage
 
@@ -257,58 +257,67 @@ void kernHighPass(int w, int h, glm::vec3 *framebuffer, float *postbuffer)
 	}
 }
 
+template <typename T>
 __global__
-void kernHorizontalBlur(int w, float *postbuffer) 
+void kernHorizontalBlur(int width, int height, T *postbuffer) 
 {
-	extern __shared__ float row[];
+	extern __shared__ T row[];
 	
-	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-	if (index >= w) return;
+	int x = threadIdx.x;
+	int y = blockIdx.x;
+	int index = x + y * width;
+	if (x < width && y < height) {
 
-	row[threadIdx.x] = postbuffer[index];
+		row[x] = postbuffer[index];
 
-	__syncthreads();
+		__syncthreads();
 
-	float weight[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
-	float ret = row[threadIdx.x] * weight[0];
+		float weight[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
+		T ret = row[threadIdx.x] * weight[0];
 
-	ret = (threadIdx.x > 3) ? (row[threadIdx.x - 4] * weight[4] + ret) : ret;
-	ret = (threadIdx.x > 2) ? (row[threadIdx.x - 3] * weight[3] + ret) : ret;
-	ret = (threadIdx.x > 1) ? (row[threadIdx.x - 2] * weight[2] + ret) : ret;
-	ret = (threadIdx.x > 0) ? (row[threadIdx.x - 1] * weight[1] + ret) : ret;
-	ret = (threadIdx.x < w - 1) ? (row[threadIdx.x + 1] * weight[1] + ret) : ret;
-	ret = (threadIdx.x < w - 2) ? (row[threadIdx.x + 2] * weight[2] + ret) : ret;
-	ret = (threadIdx.x < w - 3) ? (row[threadIdx.x + 3] * weight[3] + ret) : ret;
-	ret = (threadIdx.x < w - 4) ? (row[threadIdx.x + 4] * weight[4] + ret) : ret;
+		ret = (x > 3) ? (row[x - 4] * weight[4] + ret) : ret;
+		ret = (x > 2) ? (row[x - 3] * weight[3] + ret) : ret;
+		ret = (x > 1) ? (row[x - 2] * weight[2] + ret) : ret;
+		ret = (x > 0) ? (row[x - 1] * weight[1] + ret) : ret;
+		ret = (x < width - 1) ? (row[x + 1] * weight[1] + ret) : ret;
+		ret = (x < width - 2) ? (row[x + 2] * weight[2] + ret) : ret;
+		ret = (x < width - 3) ? (row[x + 3] * weight[3] + ret) : ret;
+		ret = (x < width - 4) ? (row[x + 4] * weight[4] + ret) : ret;
 
-	postbuffer[index] = ret;
+		postbuffer[index] = ret;
+
+	}	
 }
 
+template<typename T>
 __global__
-void kernVerticalBlur(int h, float *postbuffer) 
+void kernVerticalBlur(int width, int height, T *postbuffer) 
 {
-	extern __shared__ float col[];
+	extern __shared__ T col[];
 	
-	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-	if (index >= h) return;
+	int y = threadIdx.x;
+	int x = blockIdx.x;
+	int index = x + y * width;
+	if (x < width && y < height) {
 
-	col[threadIdx.x] = postbuffer[index];
+		col[y] = postbuffer[index];
 
-	__syncthreads();
+		__syncthreads();
 
-	float weight[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
-	float ret = col[threadIdx.x] * weight[0];
+		float weight[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
+		T ret = col[threadIdx.x] * weight[0];
 
-	ret = (threadIdx.x > 3) ? (col[threadIdx.x - 4] * weight[4] + ret) : ret;
-	ret = (threadIdx.x > 2) ? (col[threadIdx.x - 3] * weight[3] + ret) : ret;
-	ret = (threadIdx.x > 1) ? (col[threadIdx.x - 2] * weight[2] + ret) : ret;
-	ret = (threadIdx.x > 0) ? (col[threadIdx.x - 1] * weight[1] + ret) : ret;
-	ret = (threadIdx.x < h - 1) ? (col[threadIdx.x + 1] * weight[1] + ret) : ret;
-	ret = (threadIdx.x < h - 2) ? (col[threadIdx.x + 2] * weight[2] + ret) : ret;
-	ret = (threadIdx.x < h - 3) ? (col[threadIdx.x + 3] * weight[3] + ret) : ret;
-	ret = (threadIdx.x < h - 4) ? (col[threadIdx.x + 4] * weight[4] + ret) : ret;
+		ret = (y > 3) ? (col[y - 4] * weight[4] + ret) : ret;
+		ret = (y > 2) ? (col[y - 3] * weight[3] + ret) : ret;
+		ret = (y > 1) ? (col[y - 2] * weight[2] + ret) : ret;
+		ret = (y > 0) ? (col[y - 1] * weight[1] + ret) : ret;
+		ret = (y < height - 1) ? (col[y + 1] * weight[1] + ret) : ret;
+		ret = (y < height - 2) ? (col[y + 2] * weight[2] + ret) : ret;
+		ret = (y < height - 3) ? (col[y + 3] * weight[3] + ret) : ret;
+		ret = (y < height - 4) ? (col[y + 4] * weight[4] + ret) : ret;
 
-	postbuffer[index] = ret;
+		postbuffer[index] = ret;
+	}
 
 }
 
@@ -1014,17 +1023,25 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 	checkCUDAError("fragment shader");
 
 	// post-processing
+	dim3 numBlocksW(height);
+	dim3 numThreadsW(width);
+	dim3 numBlocksH(width);
+	dim3 numThreadsH(height);
 #if BLOOM
 	kernHighPass << <blockCount2d, blockSize2d >> > (width, height, dev_framebuffer, dev_postbuffer);
 
-	for (int i = 0; i < 5; ++i) {
-		kernHorizontalBlur << <height, width, width * sizeof(float) >> > (width, dev_postbuffer);
-		kernVerticalBlur << <width, height, height * sizeof(float) >> > (height, dev_postbuffer);
+	for (int i = 0; i < 10; ++i) {
+		kernHorizontalBlur << <numBlocksW, numThreadsW, width * sizeof(float) >> > (width, height, dev_postbuffer);
+		kernVerticalBlur << <numBlocksH, numThreadsH, height * sizeof(float) >> > (width, height, dev_postbuffer);
 	}
 
 	kernAddBloom << <blockCount2d, blockSize2d >> > (width, height, dev_framebuffer, dev_postbuffer);
-	checkCUDAError("post-process");
+	
+#elif GAUSSIAN
+	kernHorizontalBlur << <numBlocksW, numThreadsW, width * sizeof(glm::vec3) >> > (width, height, dev_framebuffer);
+	kernVerticalBlur << <numBlocksH, numThreadsH, height * sizeof(glm::vec3) >> > (width, height, dev_framebuffer);
 #endif
+	checkCUDAError("post-process");
 
     // Copy framebuffer into OpenGL buffer for OpenGL previewing
     sendImageToPBO<<<blockCount2d, blockSize2d>>>(pbo, width, height, dev_framebuffer);
