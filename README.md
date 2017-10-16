@@ -50,6 +50,8 @@ Tested on GeForce GTX 1070
 
 ### Performance
 
+![](img/performance.png)
+
 ### Credits
 
 * [tinygltfloader](https://github.com/syoyo/tinygltfloader) by [@soyoyo](https://github.com/syoyo)
